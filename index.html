@@ -305,7 +305,7 @@
             <div class="upload-area" id="uploadArea">
                 <h3>📁 Carregar Arquivos Excel</h3>
                 <p>Arraste arquivos aqui ou clique para selecionar</p>
-                <p><small>Suporte para múltiplos arquivos .xlsx e .xls</small></p>
+                <p><small>Suporte para múltiplos arquivos .xlsx e .xls (ou um arquivo com múltiplas abas)</small></p>
                 <input type="file" id="fileInput" multiple accept=".xlsx,.xls" style="display: none;">
             </div>
 
@@ -327,7 +327,7 @@
 
             <div class="card">
                 <h3>📋 Formato do Arquivo Excel</h3>
-                <p>Cada arquivo deve conter dados de <strong>um único poço</strong> com as colunas:</p>
+                <p>Cada arquivo/aba deve conter dados de <strong>um único poço</strong> com as colunas:</p>
                 <table class="distances-table">
                     <thead><tr><th>Coluna</th><th>Descrição</th><th>Unidade</th></tr></thead>
                     <tbody>
@@ -335,6 +335,7 @@
                         <tr><td><code>MD</code></td><td>Measured Depth</td><td>metros</td></tr>
                         <tr><td><code>INC</code></td><td>Inclinação</td><td>graus</td></tr>
                         <tr><td><code>AZI</code></td><td>Azimute</td><td>graus</td></tr>
+                        <tr><td><code>TVD</code></td><td>True Vertical Depth <strong>(Opcional)</strong></td><td>metros</td></tr>
                         <tr><td><code>Head_North</code></td><td>Coordenada Norte da cabeça</td><td>metros</td></tr>
                         <tr><td><code>Head_East</code></td><td>Coordenada Leste da cabeça</td><td>metros</td></tr>
                     </tbody>
@@ -447,7 +448,7 @@
     const colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#e67e22', '#1abc9c', '#34495e'];
 
     // ========================================================
-    // 2. FUNÇÕES DE CÁLCULO (Tradução direta do Python)
+    // 2. FUNÇÕES DE CÁLCULO
     // ========================================================
     function calculateSurveyCoords(md, inc, azi, startTvd = 0, startNorth = 0, startEast = 0) {
         const n = md.length;
@@ -551,26 +552,15 @@
         fileInput.addEventListener('change', e => handleFiles(e.target.files));
     });
 
-    // ========================================================
-    // INÍCIO DA MODIFICAÇÃO PRINCIPAL
-    // ========================================================
-
-    /**
-     * Função principal que direciona o processamento de arquivos.
-     * Verifica se foi enviado um único arquivo (para processar múltiplas abas)
-     * ou múltiplos arquivos (para processar uma aba por arquivo).
-     */
     function handleFiles(files) {
         if (!files.length) return;
         
         showStatus('⏳ Processando arquivos...', 'info');
 
         if (files.length === 1) {
-            // Se apenas um arquivo for carregado, processa cada aba como um poço.
             showStatus('ℹ️ Arquivo único detectado. Procurando por poços em cada aba...', 'info', 6000);
             processMultiSheetFile(files[0]);
         } else {
-            // Se múltiplos arquivos forem carregados, processa o primeiro aba de cada arquivo.
             showStatus(`ℹ️ Carregando ${files.length} poços de ${files.length} arquivos...`, 'info', 6000);
             Array.from(files).forEach(file => {
                 if (file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls')) {
@@ -582,28 +572,20 @@
         }
     }
 
-    /**
-     * Processa os dados de uma única planilha (já convertidos para JSON).
-     * Esta é uma função auxiliar para evitar repetição de código.
-     * @param {Array} data - Os dados da planilha em formato JSON.
-     * @param {string} identifier - Um nome para identificar a origem (nome do arquivo ou da aba).
-     * @param {string} fileName - O nome do arquivo original para mensagens de erro.
-     */
     function processAndStoreWellData(data, identifier, fileName) {
         try {
             if (!data || data.length === 0) {
-                console.warn(`Aba/Arquivo "${identifier}" em "${fileName}" está vazia ou em formato inválido. Pulando.`);
-                return; // Pula abas vazias sem mostrar erro ao usuário.
+                return;
             }
 
             const requiredCols = ['Well_Name', 'MD', 'INC', 'AZI', 'Head_North', 'Head_East'];
             const missingCols = requiredCols.filter(col => !(col in data[0]));
             if (missingCols.length > 0) {
-                throw new Error(`Colunas faltando em '${identifier}': ${missingCols.join(', ')}`);
+                throw new Error(`Colunas obrigatórias faltando em '${identifier}': ${missingCols.join(', ')}`);
             }
-
+            
+            const hasTvdColumn = 'TVD' in data[0];
             const wellName = data[0].Well_Name;
-            // Cria um nome único usando o identificador (nome do arquivo ou da aba)
             let uniqueWellName = `${wellName} (${identifier})`;
             let counter = 1;
             while (wellsData[uniqueWellName]) {
@@ -611,6 +593,7 @@
             }
 
             const sortedData = data.sort((a, b) => a.MD - b.MD);
+
             const coords = calculateSurveyCoords(
                 sortedData.map(r => r.MD),
                 sortedData.map(r => r.INC),
@@ -621,20 +604,24 @@
             );
 
             wellsData[uniqueWellName] = {
-                MD: sortedData.map(r => r.MD), INC: sortedData.map(r => r.INC), AZI: sortedData.map(r => r.AZI),
-                TVD: coords.tvd, North: coords.north, East: coords.east, Dogleg: coords.dogleg
+                MD: sortedData.map(r => r.MD),
+                INC: sortedData.map(r => r.INC),
+                AZI: sortedData.map(r => r.AZI),
+                TVD: hasTvdColumn ? sortedData.map(r => parseFloat(r.TVD) || 0) : coords.tvd,
+                North: coords.north,
+                East: coords.east,
+                Dogleg: coords.dogleg
             };
-            showStatus(`✅ Poço '${uniqueWellName}' carregado!`, 'success');
+
+            const statusMessage = `✅ Poço '${uniqueWellName}' carregado! ${hasTvdColumn ? '<strong>(Usando TVD do arquivo)</strong>' : '(TVD calculado)'}`;
+            showStatus(statusMessage, 'success');
+            console.log(`Poço ${uniqueWellName}: TVD foi ${hasTvdColumn ? 'CARREGADO do Excel' : 'CALCULADO'}. TVD Máximo: ${Math.max(...wellsData[uniqueWellName].TVD).toFixed(1)}m`);
 
         } catch (error) {
             showStatus(`❌ Erro em '${identifier}' do arquivo ${fileName}: ${error.message}`, 'error');
         }
     }
 
-    /**
-     * Processa um arquivo Excel, tratando a PRIMEIRA ABA como um poço.
-     * Usado quando múltiplos arquivos são carregados.
-     */
     function processSingleSheetFile(file) {
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -644,62 +631,45 @@
                 const worksheet = workbook.Sheets[firstSheetName];
                 const data = XLSX.utils.sheet_to_json(worksheet);
                 const fileNameIdentifier = file.name.split('.').slice(0, -1).join('.');
-
                 processAndStoreWellData(data, fileNameIdentifier, file.name);
-
             } catch (error) {
                  showStatus(`❌ Erro ao ler o arquivo ${file.name}: ${error.message}`, 'error');
             }
-            // Atualiza a UI após o processamento deste arquivo.
             updateFullUI();
         };
         reader.onerror = () => showStatus(`❌ Falha ao ler o arquivo ${file.name}.`, 'error');
         reader.readAsBinaryString(file);
     }
 
-    /**
-     * Processa um arquivo Excel, tratando CADA ABA como um poço individual.
-     * Usado quando apenas um arquivo é carregado.
-     */
     function processMultiSheetFile(file) {
         const reader = new FileReader();
         reader.onload = (e) => {
             let wellsFound = 0;
             try {
                 const workbook = XLSX.read(e.target.result, { type: 'binary' });
-
                 workbook.SheetNames.forEach(sheetName => {
-                    // Ignora abas com nomes comuns que geralmente não contêm dados de poços
                     if (['resumo', 'summary', 'capa', 'readme'].includes(sheetName.toLowerCase())) {
                         return;
                     }
                     const worksheet = workbook.Sheets[sheetName];
                     const data = XLSX.utils.sheet_to_json(worksheet);
                     
-                    // Apenas processa se a aba tiver dados e o nome do poço
                     if (data.length > 0 && data[0].Well_Name) {
                         processAndStoreWellData(data, sheetName, file.name);
                         wellsFound++;
                     }
                 });
-                
                 if (wellsFound === 0) {
                      showStatus(`🤔 Nenhum dado de poço válido encontrado nas abas do arquivo ${file.name}. Verifique o formato.`, 'info', 6000);
                 }
-
             } catch (error) {
                  showStatus(`❌ Erro ao ler o arquivo ${file.name}: ${error.message}`, 'error');
             }
-            // Atualiza a UI uma vez após processar todas as abas.
             updateFullUI();
         };
         reader.onerror = () => showStatus(`❌ Falha ao ler o arquivo ${file.name}.`, 'error');
         reader.readAsBinaryString(file);
     }
-
-    // ========================================================
-    // FIM DA MODIFICAÇÃO PRINCIPAL
-    // ========================================================
 
     function removeWell(wellName) {
         if (confirm(`Tem certeza que deseja remover o poço "${wellName}"?`)) {
@@ -719,7 +689,7 @@
     }
     
     // ========================================================
-    // 5. FUNÇÕES DE ATUALIZAÇÃO DA UI (Listas, Gráficos, etc.)
+    // 5. FUNÇÕES DE ATUALIZAÇÃO DA UI
     // ========================================================
 
     function updateFullUI() {
@@ -742,7 +712,7 @@
         }
         
         listDiv.style.display = 'block';
-        wellNames.forEach((name, i) => {
+        wellNames.forEach((name) => {
             const item = document.createElement('div');
             item.className = 'well-item';
             item.innerHTML = `<span><b style="color:${colors[Object.keys(wellsData).indexOf(name) % colors.length]};">●</b> ${name}</span>
@@ -776,7 +746,7 @@
     }
     
     // ========================================================
-    // 6. LÓGICA DE PLOTAGEM (3D e Planejamento)
+    // 6. LÓGICA DE PLOTAGEM
     // ========================================================
 
     function update3DPlot() {
@@ -791,7 +761,7 @@
             return;
         }
 
-        selectedWells.forEach((name, i) => {
+        selectedWells.forEach((name) => {
             const data = wellsData[name];
             const color = colors[Object.keys(wellsData).indexOf(name) % colors.length];
             traces.push({
